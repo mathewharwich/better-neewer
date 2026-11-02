@@ -1,0 +1,18 @@
+name: macOS build and protocol tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Offline protocol and profile tests
+        run: ./app/test.sh
+      - name: Universal local build
+        run: ./app/build.sh
+      - name: Check both architectures
+        run: lipo -verify_arch arm64 x86_64 'app/build/Better Neewer.app/Contents/MacOS/BetterNeewer'

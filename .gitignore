@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+app/build/
+release/
+.env
+.env.*
+*.p12
+*.p8
+*.mobileprovision
+profiles-v2.json
+studio.json
