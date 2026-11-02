@@ -132,9 +132,9 @@ struct StudioView: View {
                 Button("Connect all lights") { controller.connectAll() }
                     .disabled(controller.lights.isEmpty)
                 Button("Refresh connected lights") {
-                    for light in controller.lights where light.canControl { controller.refresh(light) }
+                    for light in controller.lights where light.connection == .connected { controller.refresh(light) }
                 }
-                .disabled(!controller.lights.contains(where: \.canControl))
+                .disabled(!controller.lights.contains { $0.connection == .connected })
                 Divider()
                 if !isWindow { Button("Open control window", action: openWindow) }
                 Button("Quit Better Neewer") { NSApp.terminate(nil) }.keyboardShortcut("q")
@@ -190,7 +190,7 @@ private struct StudioLightCard: View {
                     if light.connection == .disconnected {
                         Button("Connect") { controller.connect(light) }
                     } else {
-                        Button("Refresh") { controller.refresh(light) }.disabled(!light.canControl)
+                        Button("Refresh") { controller.refresh(light) }.disabled(light.connection != .connected)
                         Button("Disconnect") { controller.disconnect(light) }
                     }
                     Divider()
@@ -265,7 +265,7 @@ private struct StudioLightCard: View {
                     Button("Connect") { controller.connect(light) }
                         .accessibilityLabel("Connect \(light.displayName)")
                         .accessibilityIdentifier("\(light.id.uuidString)-connect")
-                } else if !light.canControl {
+                } else if light.connection != .connected {
                     Button("Cancel") { controller.disconnect(light) }
                         .accessibilityLabel("Cancel connection to \(light.displayName)")
                 } else {

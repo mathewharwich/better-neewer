@@ -24,7 +24,7 @@ This is an independent, MIT-licensed project, unaffiliated with NEEWER. Support 
 
 Download and unzip the macOS beta, then move **Better Neewer.app** into Applications. The release is a universal Intel/Apple-silicon binary for macOS 14 or later.
 
-The first public beta is Developer ID signed but **not notarized**. macOS may require the app-specific **Open Anyway** control in System Settings → Privacy & Security. Follow [Apple's instructions](https://support.apple.com/en-us/102445) for software from an identified developer. Do not disable Gatekeeper globally. You can also build locally from source.
+The public beta is Developer ID signed but **not notarized**. macOS may require the app-specific **Open Anyway** control in System Settings → Privacy & Security. Follow [Apple's instructions](https://support.apple.com/en-us/102445) for software from an identified developer. Do not disable Gatekeeper globally. You can also build locally from source.
 
 ## Add your lights
 
@@ -50,7 +50,7 @@ A model name is not a unique device identity. The app saves each fixture's CoreB
 
 Basic control was physically checked on CB60B, CB60 RGB and CB200B. Those checks covered power on all three, brightness/temperature on both bi-color lights, RGB color and Hue loop, and CB200B Boost. Menu-bar open/dismiss and no-Dock behavior were confirmed on an Intel Mac.
 
-All 12/17 effects have source-backed encodings and offline tests; every scene, optional parameter combination, tint range and firmware has not been physically qualified. Generic discovery is newer than the original personal build. Apple-silicon execution, sleep/wake and Bluetooth off/on need broader field testing. A universal binary is not a claim of testing on both architectures. Radio range has not been benchmarked against the vendor dongle.
+All 12/17 effects have source-backed encodings and offline tests; every scene, optional parameter combination, tint range and firmware has not been physically qualified. First-run discovery, automatic address resolution and read-only status synchronization were also checked on a CB200B. Enrollment on additional fixtures remains beta functionality. Apple-silicon execution, sleep/wake and Bluetooth off/on need broader field testing. A universal binary is not a claim of testing on both architectures. Radio range has not been benchmarked against the vendor dongle.
 
 Firmware updates, vendor account services, Wi-Fi control, proprietary USB/2.4 GHz control and generic enrollment of other models are not included.
 

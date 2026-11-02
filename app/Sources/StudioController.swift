@@ -2,6 +2,45 @@ import Foundation
 import Combine
 @preconcurrency import CoreBluetooth
 
+// Discovery and connected-inventory paths share this pure eligibility rule.
+// Model names are checked before retaining a peripheral or any metadata, and a
+// saved instance never appears again as a new enrollment candidate.
+enum EnrollmentCandidates {
+    static func identityName(peripheralName: String?, observedName: String?) -> String? {
+        let vettedObservation = observedName.flatMap { LightKind.detect(name: $0) == nil ? nil : $0 }
+        if let peripheralName {
+            guard LightKind.detect(name: peripheralName) != nil,
+                  vettedObservation == nil || vettedObservation == peripheralName else { return nil }
+            return peripheralName
+        }
+        return vettedObservation
+    }
+
+    static func canEnroll(_ candidate: DiscoveredLight, peripheralID: UUID,
+                          peripheralName: String?, observedName: String?) -> Bool {
+        candidate.id == peripheralID && observedName == candidate.advertisedName &&
+        identityName(peripheralName: peripheralName, observedName: observedName) == candidate.advertisedName &&
+        LightKind.detect(name: candidate.advertisedName) == candidate.kind
+    }
+
+    static func make(id: UUID, peripheralName: String?, advertisedName: String? = nil,
+                     rssi: Int? = nil, savedIDs: Set<UUID>) -> DiscoveredLight? {
+        guard !savedIDs.contains(id), let name = identityName(peripheralName: peripheralName, observedName: advertisedName) else { return nil }
+        guard let kind = LightKind.detect(name: name) else { return nil }
+        return DiscoveredLight(id: id, kind: kind, advertisedName: name, rssi: rssi, mac: nil)
+    }
+
+    static func upsert(_ candidate: DiscoveredLight, into candidates: inout [DiscoveredLight]) {
+        if let index = candidates.firstIndex(where: { $0.id == candidate.id }) {
+            var updated = candidate
+            // An inventory snapshot has no RSSI. Preserve a scan's useful value.
+            if updated.rssi == nil { updated.rssi = candidates[index].rssi }
+            if updated.mac == nil { updated.mac = candidates[index].mac }
+            candidates[index] = updated
+        } else { candidates.append(candidate) }
+    }
+}
+
 @MainActor
 final class StudioController: NSObject, ObservableObject, @preconcurrency CBCentralManagerDelegate, @preconcurrency CBPeripheralDelegate {
     @Published private(set) var lights: [LightState]
@@ -114,8 +153,9 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
     func addLight(_ candidate: DiscoveredLight, macAddress: String? = nil) {
         guard sessions[candidate.id] == nil,
               let peripheral = discoveredPeripherals[candidate.id],
-              peripheral.name == candidate.advertisedName,
-              LightKind.detect(name: candidate.advertisedName) == candidate.kind else {
+              availableLights.contains(where: { $0.id == candidate.id && $0.advertisedName == candidate.advertisedName && $0.kind == candidate.kind }),
+              EnrollmentCandidates.canEnroll(candidate, peripheralID: peripheral.identifier, peripheralName: peripheral.name,
+                                             observedName: observedNames[peripheral.identifier]) else {
             enrollmentStatus = "This discovery is no longer available. Scan again."; return
         }
         let manual = macAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -268,7 +308,7 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
             session.peripheral = central.retrievePeripherals(withIdentifiers: [light.id]).first
         }
         guard let peripheral = session.peripheral,
-              light.accepts(identifier: peripheral.identifier, name: peripheral.name) else {
+              matches(peripheral, light: light) else {
             light.error = "Your \(light.kind.name) has not been found. Turn on its mains power, then try again."
             light.connection = .disconnected
             scanKnown()
@@ -451,7 +491,7 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
     private func enqueue(_ command: NeewerCommand, in session: Session) {
         guard session.light.connection == .connected, session.notifyReady,
               let peripheral = session.peripheral,
-              session.light.accepts(identifier: peripheral.identifier, name: peripheral.name), let mac = session.light.mac else { return }
+              matches(peripheral, light: session.light), let mac = session.light.mac else { return }
         do {
             if case .query = command {} else if !session.light.identityConfirmed { return }
             let packet = try command.packet(for: session.light.kind, mac: mac)
@@ -474,7 +514,7 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
               session.light.connection == .connected, session.notifyReady,
               let peripheral = session.peripheral, peripheral.state == .connected,
               let characteristic = session.characteristic, !session.queue.isEmpty,
-              session.light.accepts(identifier: peripheral.identifier, name: peripheral.name) else { return }
+              matches(peripheral, light: session.light) else { return }
         let type: CBCharacteristicWriteType
         if characteristic.properties.contains(.write) { type = .withResponse }
         else if characteristic.properties.contains(.writeWithoutResponse) {
@@ -567,21 +607,47 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
         scanTimer?.invalidate(); central.stopScan()
         for light in lights {
             if let peripheral = central.retrievePeripherals(withIdentifiers: [light.id]).first,
-               light.accepts(identifier: peripheral.identifier, name: peripheral.name) {
+               matches(peripheral, light: light) {
                 sessions[light.id]?.peripheral = peripheral
             }
         }
         for peripheral in central.retrieveConnectedPeripherals(withServices: [serviceID]) {
-            if let name = peripheral.name, LightKind.detect(name: name) != nil { observedNames[peripheral.identifier] = name }
+            observe(peripheral, connectSaved: false)
         }
-        central.scanForPeripherals(withServices: [serviceID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        // These fixtures do not always advertise their control-service UUID.
+        // Broad radio discovery is filtered immediately by supported model name.
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         isScanning = true
         scanTimer = later(8) { [weak self] in self?.central?.stopScan(); self?.isScanning = false }
     }
 
     private func session(for peripheral: CBPeripheral) -> Session? {
-        guard let session = sessions[peripheral.identifier], session.light.accepts(identifier: peripheral.identifier, name: peripheral.name) else { return nil }
+        guard let session = sessions[peripheral.identifier], matches(peripheral, light: session.light) else { return nil }
         return session
+    }
+
+    private func matches(_ peripheral: CBPeripheral, light: LightState) -> Bool {
+        light.accepts(identifier: peripheral.identifier,
+                      name: EnrollmentCandidates.identityName(peripheralName: peripheral.name,
+                                                              observedName: observedNames[peripheral.identifier]))
+    }
+
+    private func observe(_ peripheral: CBPeripheral, advertisedName: String? = nil,
+                         rssi: Int? = nil, connectSaved: Bool) {
+        guard let name = EnrollmentCandidates.identityName(peripheralName: peripheral.name, observedName: advertisedName) else { return }
+        observedNames[peripheral.identifier] = name
+        discoveredPeripherals[peripheral.identifier] = peripheral
+        if let session = session(for: peripheral) {
+            session.peripheral = peripheral
+            session.light.hasBeenSeen = true
+            if connectSaved && session.wantsConnection && session.light.connection == .disconnected && session.retryTimer == nil {
+                beginConnect(session)
+            }
+        } else if let candidate = EnrollmentCandidates.make(id: peripheral.identifier, peripheralName: peripheral.name,
+                                                            advertisedName: advertisedName, rssi: rssi, savedIDs: Set(sessions.keys)) {
+            EnrollmentCandidates.upsert(candidate, into: &availableLights)
+            enrollmentStatus = "Found \(availableLights.count) supported light\(availableLights.count == 1 ? "" : "s"). Choose one to add."
+        }
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -608,20 +674,8 @@ final class StudioController: NSObject, ObservableObject, @preconcurrency CBCent
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
-        guard let name, let kind = LightKind.detect(name: name) else { return }
-        observedNames[peripheral.identifier] = name
-        discoveredPeripherals[peripheral.identifier] = peripheral
-        if let session = session(for: peripheral) {
-            session.peripheral = peripheral
-            session.light.hasBeenSeen = true
-            if session.wantsConnection && session.light.connection == .disconnected && session.retryTimer == nil { beginConnect(session) }
-        } else {
-            let candidate = DiscoveredLight(id: peripheral.identifier, kind: kind, advertisedName: name, rssi: RSSI.intValue, mac: nil)
-            if let index = availableLights.firstIndex(where: { $0.id == candidate.id }) { availableLights[index] = candidate }
-            else { availableLights.append(candidate) }
-            enrollmentStatus = "Found \(availableLights.count) supported light\(availableLights.count == 1 ? "" : "s"). Choose one to add."
-        }
+        observe(peripheral, advertisedName: advertisementData[CBAdvertisementDataLocalNameKey] as? String,
+                rssi: RSSI.intValue, connectSaved: true)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {

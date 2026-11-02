@@ -18,6 +18,35 @@ import Foundation
         let settings = try JSONSerialization.jsonObject(with: JSONEncoder().encode(RememberedSettings(brightness: 36)))
         let one = "00000000-0000-4000-8000-000000000001"
         let two = "00000000-0000-4000-8000-000000000002"
+        let oneID = UUID(uuidString: one)!, twoID = UUID(uuidString: two)!
+        // A fixture held connected by another app may not advertise. Inventory
+        // names must become candidates without requiring advertisement metadata.
+        let inventory = EnrollmentCandidates.make(id: oneID, peripheralName: "NW-20210037&TEST0001", savedIDs: [])!
+        expect(inventory.kind == .cb200b && inventory.rssi == nil, "Connected inventory creates an enrollment candidate")
+        // These advertisements intentionally contain no service UUID list.
+        let advertisement = EnrollmentCandidates.make(id: twoID, peripheralName: nil, advertisedName: "NW-20210037&TEST0002", rssi: -42, savedIDs: [])!
+        expect(EnrollmentCandidates.canEnroll(advertisement, peripheralID: twoID, peripheralName: nil, observedName: advertisement.advertisedName), "A vetted ad-only candidate remains enrollable when CoreBluetooth name is nil")
+        expect(!EnrollmentCandidates.canEnroll(advertisement, peripheralID: oneID, peripheralName: nil, observedName: advertisement.advertisedName), "Advertising name never substitutes for exact UUID")
+        expect(!EnrollmentCandidates.canEnroll(advertisement, peripheralID: twoID, peripheralName: nil, observedName: nil), "Missing observation cannot authenticate an ad-only candidate")
+        expect(!EnrollmentCandidates.canEnroll(advertisement, peripheralID: twoID, peripheralName: "NW-20210037&DIFFERENT", observedName: advertisement.advertisedName), "A conflicting full peripheral name rejects enrollment")
+        expect(EnrollmentCandidates.make(id: twoID, peripheralName: "NW-20210037&DIFFERENT", advertisedName: advertisement.advertisedName, savedIDs: []) == nil, "Conflicting native and advertising names are never offered")
+        let adOnlyProfile = LightState(id: twoID, kind: advertisement.kind, advertisedName: advertisement.advertisedName, mac: [2,16,32,48,64,80])
+        let carriedName = EnrollmentCandidates.identityName(peripheralName: nil, observedName: advertisement.advertisedName)
+        expect(adOnlyProfile.accepts(identifier: twoID, name: carriedName), "The same vetted observation supports connection and callback identity matching")
+        adOnlyProfile.connection = .connected
+        expect(!adOnlyProfile.canControl, "Ad-only enrollment still requires separate live MAC readback before setters")
+        var candidates: [DiscoveredLight] = []
+        EnrollmentCandidates.upsert(inventory, into: &candidates)
+        EnrollmentCandidates.upsert(advertisement, into: &candidates)
+        expect(candidates.count == 2, "Inventory and advertisement can expose two units of one model")
+        let updated = EnrollmentCandidates.make(id: oneID, peripheralName: inventory.advertisedName, rssi: -55, savedIDs: [])!
+        EnrollmentCandidates.upsert(updated, into: &candidates)
+        EnrollmentCandidates.upsert(inventory, into: &candidates)
+        expect(candidates.count == 2 && candidates.first?.rssi == -55, "Upsert deduplicates IDs and preserves RSSI across inventory snapshots")
+        expect(EnrollmentCandidates.make(id: oneID, peripheralName: inventory.advertisedName, savedIDs: [oneID]) == nil, "Saved instances are excluded from enrollment")
+        expect(EnrollmentCandidates.make(id: oneID, peripheralName: "Unrelated device", advertisedName: "Also unrelated", savedIDs: []) == nil, "Unrelated names are excluded")
+        expect(EnrollmentCandidates.make(id: oneID, peripheralName: "NW-202100370&TEST", savedIDs: []) == nil, "Model-prefix near matches are rejected")
+        print("PASS enrollment: connected inventory, advertisements without service UUIDs, same-model instances, upsert, and saved-device exclusion")
         func record(_ id: String, _ suffix: String, _ name: String) -> [String: Any] {
             ["id": id, "kind": "cb200b", "advertisedName": "NW-20210037&" + suffix,
              "mac": [2,16,32,48,64,80], "name": name, "settings": settings, "hasSavedSettings": true]
