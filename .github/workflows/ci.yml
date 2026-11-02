@@ -15,4 +15,4 @@ jobs:
       - name: Universal local build
         run: ./app/build.sh
       - name: Check both architectures
-        run: lipo -verify_arch arm64 x86_64 'app/build/Better Neewer.app/Contents/MacOS/BetterNeewer'
+        run: lipo 'app/build/Better Neewer.app/Contents/MacOS/BetterNeewer' -verify_arch arm64 x86_64
